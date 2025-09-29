@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander'
+import ora from 'ora'
+import path from 'path'
 import { translatePoFile, translatePoDirectory } from '../src/index.js'
 
 const program = new Command()
@@ -20,6 +22,11 @@ program
 program.parse(process.argv)
 
 const opts = program.opts()
+
+function formatProgressText({ filePath, processed, total }) {
+  const rel = path.relative(process.cwd(), filePath)
+  return `${rel} – ${processed}/${total}`
+}
 
 async function run() {
   if (!process.env.OPENAI_API_KEY) {
@@ -42,11 +49,23 @@ async function run() {
       console.error('When using --file, --language is required (e.g., -l fr).')
       process.exit(1)
     }
-    await translatePoFile({ filePath: opts.file, language: opts.language, model: opts.model, dryRun: opts.dryRun })
+    const spinner = ora(`Translating ${opts.file}`).start()
+    await translatePoFile({
+      filePath: opts.file,
+      language: opts.language,
+      model: opts.model,
+      dryRun: opts.dryRun,
+      onProgress: (ev) => {
+        if (ev.type === 'start') spinner.text = formatProgressText({ filePath: ev.filePath, processed: 0, total: ev.total })
+        if (ev.type === 'progress') spinner.text = formatProgressText(ev)
+        if (ev.type === 'done') ev.dryRun ? spinner.info(formatProgressText(ev)) : spinner.succeed(formatProgressText(ev))
+      },
+    })
     return
   }
 
   if (opts.directory) {
+    const spinner = ora(`Scanning ${opts.directory}`).start()
     await translatePoDirectory({
       directoryPath: opts.directory,
       include: opts.include,
@@ -54,7 +73,13 @@ async function run() {
       dryRun: opts.dryRun,
       concurrency: opts.concurrency,
       defaultLanguage: opts.language,
+      onProgress: (ev) => {
+        if (ev.type === 'start') spinner.text = formatProgressText({ filePath: ev.filePath, processed: 0, total: ev.total })
+        if (ev.type === 'progress') spinner.text = formatProgressText(ev)
+        if (ev.type === 'done') ev.dryRun ? spinner.info(formatProgressText(ev)) : spinner.succeed(formatProgressText(ev))
+      },
     })
+    spinner.stop()
     return
   }
 }

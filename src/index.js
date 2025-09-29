@@ -58,10 +58,10 @@ function listUntranslatedEntries(poJson) {
 
 function setTranslation(entry, text) {
   if (!Array.isArray(entry.msgstr)) entry.msgstr = ['']
-  entry.msgstr[0] = text.replace(/\"/g, '\\\"')
+  entry.msgstr[0] = text.replace(/"/g, '\\"')
 }
 
-export async function translatePoFile({ filePath, language, model, dryRun = false }) {
+export async function translatePoFile({ filePath, language, model, dryRun = false, client, onProgress }) {
   const abs = path.resolve(filePath)
   const raw = fs.readFileSync(abs)
   const po = gettextParser.po.parse(raw)
@@ -72,23 +72,30 @@ export async function translatePoFile({ filePath, language, model, dryRun = fals
     throw new Error(`Could not determine language for ${filePath}. Provide --language or set Language header in .po`)
   }
 
-  const client = getOpenAIClient()
   const items = listUntranslatedEntries(po)
+  const total = items.length
+
+  if (onProgress) onProgress({ type: 'start', filePath: abs, total })
+
+  const openaiClient = client || getOpenAIClient()
 
   let processed = 0
   for (const { entry, msgid } of items) {
-    const translated = await translateText({ client, text: msgid, language: targetLang, model })
+    const translated = await translateText({ client: openaiClient, text: msgid, language: targetLang, model })
     setTranslation(entry, translated)
     processed += 1
+    if (onProgress) onProgress({ type: 'progress', filePath: abs, processed, total })
   }
 
   if (dryRun) {
+    if (onProgress) onProgress({ type: 'done', filePath: abs, processed, total, dryRun: true })
     console.log(`[dry-run] ${filePath}: would write ${processed} translations`)
     return { filePath: abs, processed, dryRun: true }
   }
 
   const out = gettextParser.po.compile(po)
   fs.writeFileSync(abs, out)
+  if (onProgress) onProgress({ type: 'done', filePath: abs, processed, total, dryRun: false })
   return { filePath: abs, processed, dryRun: false }
 }
 
@@ -131,6 +138,8 @@ export async function translatePoDirectory({
   defaultModel,
   dryRun = false,
   concurrency = 2,
+  client,
+  onProgress,
 }) {
   const absDir = path.resolve(directoryPath)
   const files = await fg(include, { cwd: absDir, absolute: true })
@@ -149,7 +158,7 @@ export async function translatePoDirectory({
       console.warn(`Skipping ${filePath}: could not determine language (no header and no --language)`) 
       return { filePath, processed: 0, skipped: true }
     }
-    return await translatePoFile({ filePath, language, model: defaultModel, dryRun })
+    return await translatePoFile({ filePath, language, model: defaultModel, dryRun, client, onProgress })
   })
 
   return results

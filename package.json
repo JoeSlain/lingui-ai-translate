@@ -18,7 +18,9 @@
   "scripts": {
     "start": "node bin/lingui-ai-translate.js",
     "example:fr": "node bin/lingui-ai-translate.js -f examples/fr/messages.po -l fr",
-    "example:de": "node bin/lingui-ai-translate.js -f examples/de/messages.po -l de"
+    "example:de": "node bin/lingui-ai-translate.js -f examples/de/messages.po -l de",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [
     "lingui",
@@ -37,6 +39,10 @@
     "commander": "^12.1.0",
     "fast-glob": "^3.3.2",
     "gettext-parser": "^6.0.0",
-    "openai": "^4.58.1"
+    "openai": "^4.58.1",
+    "ora": "^8.1.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.2"
   }
 }
