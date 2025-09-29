@@ -28,7 +28,7 @@
     "openai",
     "cli"
   ],
-  "author": "",
+  "author": "Joe Slain",
   "license": "MIT",
   "engines": {
     "node": ">=18"
