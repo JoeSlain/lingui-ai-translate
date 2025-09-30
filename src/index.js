@@ -64,7 +64,13 @@ function setTranslation(entry, text) {
 export async function translatePoFile({ filePath, language, model, dryRun = false, client, onProgress }) {
   const abs = path.resolve(filePath)
   const raw = fs.readFileSync(abs)
-  const po = gettextParser.po.parse(raw)
+  let po
+  try {
+    po = gettextParser.po.parse(raw)
+  } catch (err) {
+    const baseMsg = err?.message || String(err)
+    throw new Error(`Error parsing PO data in ${abs}: ${baseMsg}. This can be caused by an unescaped quote character in a msgid or msgstr value.`)
+  }
 
   const headerLang = extractLanguageFromHeaders(po.headers)
   const targetLang = language || headerLang
@@ -151,7 +157,13 @@ export async function translatePoDirectory({
 
   const results = await withConcurrency(concurrency, files, async (filePath) => {
     const raw = fs.readFileSync(filePath)
-    const po = gettextParser.po.parse(raw)
+    let po
+    try {
+      po = gettextParser.po.parse(raw)
+    } catch (err) {
+      const baseMsg = err?.message || String(err)
+      throw new Error(`Error parsing PO data in ${filePath}: ${baseMsg}. This can be caused by an unescaped quote character in a msgid or msgstr value.`)
+    }
     const headerLang = extractLanguageFromHeaders(po.headers)
     const language = headerLang || defaultLanguage
     if (!language) {
