@@ -1,6 +1,6 @@
 {
   "name": "lingui-ai-translate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Translate Lingui .po files using OpenAI. CLI and library.",
   "type": "module",
   "bin": {

@@ -23,7 +23,7 @@ function extractLanguageFromHeaders(headers) {
 }
 
 function createTranslatePrompt(targetLang) {
-  return `Translate into ${targetLang}. Only output the translation text. Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" should keep {name} unchanged. Maintain surrounding punctuation.`
+  return `Translate into ${targetLang}. Only output the translation text. Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" should keep {name} unchanged. Maintain surrounding punctuation. Make short an concise translation while preserving the full meaning of the sentence.`
 }
 
 async function translateText({ client, text, language, model }) {
