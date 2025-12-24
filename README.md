@@ -27,6 +27,8 @@ Batch translate a directory. Language is read from the `.po` header `Language:`.
 lingui-ai-translate -d locale/ --include "**/messages.po"
 # or with default language fallback
 lingui-ai-translate -d locale/ -l fr
+# or with custom translation rules
+lingui-ai-translate -f locale/fr/messages.po -l fr --rules "only use first person, do not translate the word 'API'"
 ```
 
 Options:
@@ -38,6 +40,7 @@ Options:
 - `--model <model>`: OpenAI model (default `gpt-4o-mini`)
 - `--dry-run`: Print planned changes without writing
 - `--concurrency <n>`: Files to process in parallel (default 2)
+- `--rules <rules>`: Additional translation rules (e.g., "only use first person, do not translate the word 'API'")
 
 ### Library API
 
@@ -46,10 +49,17 @@ import { translatePoFile, translatePoDirectory } from 'lingui-ai-translate'
 
 await translatePoFile({ filePath: 'locale/fr/messages.po', language: 'fr' })
 
+await translatePoFile({
+  filePath: 'locale/fr/messages.po',
+  language: 'fr',
+  rules: "only use first person, do not translate the word 'API'"
+})
+
 await translatePoDirectory({
   directoryPath: 'locale',
   include: '**/messages.po',
   defaultLanguage: 'fr',
+  rules: "only use first person, do not translate the word 'API'"
 })
 ```
 

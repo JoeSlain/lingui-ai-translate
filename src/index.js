@@ -22,15 +22,21 @@ function extractLanguageFromHeaders(headers) {
   return null
 }
 
-function createTranslatePrompt(targetLang) {
-  return `Translate into ${targetLang}. Only output the translation text. Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" should keep {name} unchanged. Maintain surrounding punctuation. Make short an concise translation while preserving the full meaning of the sentence.`
+function createTranslatePrompt(targetLang, rules) {
+  let prompt = `Translate into ${targetLang}. Only output the translation text. Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" should keep {name} unchanged. Maintain surrounding punctuation. Make short an concise translation while preserving the full meaning of the sentence.`
+  
+  if (rules && rules.trim()) {
+    prompt += `\n\nAdditional translation rules:\n${rules.trim()}`
+  }
+  
+  return prompt
 }
 
-async function translateText({ client, text, language, model }) {
+async function translateText({ client, text, language, model, rules }) {
   const res = await client.chat.completions.create({
     model: model || 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: createTranslatePrompt(language) },
+      { role: 'system', content: createTranslatePrompt(language, rules) },
       { role: 'user', content: text },
     ],
   })
@@ -61,7 +67,7 @@ function setTranslation(entry, text) {
   entry.msgstr[0] = text.replace(/"/g, '\\"')
 }
 
-export async function translatePoFile({ filePath, language, model, dryRun = false, client, onProgress }) {
+export async function translatePoFile({ filePath, language, model, dryRun = false, client, onProgress, rules }) {
   const abs = path.resolve(filePath)
   const raw = fs.readFileSync(abs)
   let po
@@ -87,7 +93,7 @@ export async function translatePoFile({ filePath, language, model, dryRun = fals
 
   let processed = 0
   for (const { entry, msgid } of items) {
-    const translated = await translateText({ client: openaiClient, text: msgid, language: targetLang, model })
+    const translated = await translateText({ client: openaiClient, text: msgid, language: targetLang, model, rules })
     setTranslation(entry, translated)
     processed += 1
     if (onProgress) onProgress({ type: 'progress', filePath: abs, processed, total })
@@ -146,6 +152,7 @@ export async function translatePoDirectory({
   concurrency = 2,
   client,
   onProgress,
+  rules,
 }) {
   const absDir = path.resolve(directoryPath)
   const files = await fg(include, { cwd: absDir, absolute: true })
@@ -170,7 +177,7 @@ export async function translatePoDirectory({
       console.warn(`Skipping ${filePath}: could not determine language (no header and no --language)`) 
       return { filePath, processed: 0, skipped: true }
     }
-    return await translatePoFile({ filePath, language, model: defaultModel, dryRun, client, onProgress })
+    return await translatePoFile({ filePath, language, model: defaultModel, dryRun, client, onProgress, rules })
   })
 
   return results

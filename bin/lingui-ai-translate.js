@@ -17,6 +17,7 @@ program
   .option('--dry-run', 'Do not write files, just show planned changes', false)
   .option('--include <glob>', 'Glob pattern relative to directory, e.g. "**/messages.po"', '**/*.po')
   .option('--concurrency <n>', 'Parallel files to process', (v) => parseInt(v, 10), 2)
+  .option('--rules <rules>', 'Additional translation rules (e.g., "only use first person, do not translate this word")')
   .showHelpAfterError()
 
 program.parse(process.argv)
@@ -55,6 +56,7 @@ async function run() {
       language: opts.language,
       model: opts.model,
       dryRun: opts.dryRun,
+      rules: opts.rules,
       onProgress: (ev) => {
         if (ev.type === 'start') spinner.text = formatProgressText({ filePath: ev.filePath, processed: 0, total: ev.total })
         if (ev.type === 'progress') spinner.text = formatProgressText(ev)
@@ -73,6 +75,7 @@ async function run() {
       dryRun: opts.dryRun,
       concurrency: opts.concurrency,
       defaultLanguage: opts.language,
+      rules: opts.rules,
       onProgress: (ev) => {
         if (ev.type === 'start') spinner.text = formatProgressText({ filePath: ev.filePath, processed: 0, total: ev.total })
         if (ev.type === 'progress') spinner.text = formatProgressText(ev)
