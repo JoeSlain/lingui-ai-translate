@@ -1,48 +1,51 @@
 {
-  "name": "lingui-ai-translate",
-  "version": "0.1.3",
-  "description": "Translate Lingui .po files using OpenAI. CLI and library.",
-  "type": "module",
-  "bin": {
-    "lingui-ai-translate": "bin/lingui-ai-translate.js"
-  },
-  "exports": {
-    ".": "./src/index.js"
-  },
-  "files": [
-    "bin",
-    "src",
-    "README.md",
-    "examples"
-  ],
-  "scripts": {
-    "start": "node bin/lingui-ai-translate.js",
-    "example:fr": "node bin/lingui-ai-translate.js -f examples/fr/messages.po -l fr",
-    "example:de": "node bin/lingui-ai-translate.js -f examples/de/messages.po -l de",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "keywords": [
-    "lingui",
-    "gettext",
-    ".po",
-    "translate",
-    "openai",
-    "cli"
-  ],
-  "author": "Joe Slain",
-  "license": "MIT",
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "commander": "^12.1.0",
-    "fast-glob": "^3.3.2",
-    "gettext-parser": "^6.0.0",
-    "openai": "^4.58.1",
-    "ora": "^8.1.0"
-  },
-  "devDependencies": {
-    "vitest": "^2.1.2"
-  }
+	"name": "lingui-ai-translate",
+	"version": "0.1.3",
+	"description": "Translate Lingui .po files using OpenAI. CLI and library.",
+	"type": "module",
+	"bin": {
+		"lingui-ai-translate": "bin/lingui-ai-translate.js"
+	},
+	"exports": {
+		".": "./src/index.js"
+	},
+	"files": [
+		"bin",
+		"src",
+		"README.md",
+		"examples"
+	],
+	"scripts": {
+		"start": "node bin/lingui-ai-translate.js",
+		"example:fr": "node bin/lingui-ai-translate.js -f examples/fr/messages.po -l fr",
+		"example:de": "node bin/lingui-ai-translate.js -f examples/de/messages.po -l de",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:integration": "vitest run --config vitest.integration.config.js"
+	},
+	"keywords": [
+		"lingui",
+		"gettext",
+		".po",
+		"translate",
+		"openai",
+		"cli"
+	],
+	"author": "Joe Slain",
+	"license": "MIT",
+	"engines": {
+		"node": ">=18"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.72.1",
+		"@google/genai": "^1.39.0",
+		"commander": "^12.1.0",
+		"fast-glob": "^3.3.2",
+		"gettext-parser": "^6.0.0",
+		"openai": "^4.58.1",
+		"ora": "^8.1.0"
+	},
+	"devDependencies": {
+		"vitest": "^2.1.2"
+	}
 }
