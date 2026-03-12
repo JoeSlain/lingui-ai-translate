@@ -107,12 +107,6 @@ npm run test:integration
 ### Examples
 See `examples/fr/messages.po` and `examples/de/messages.po` for small sample files.
 
-### Legacy script usage
-The legacy entry still works (OpenAI only):
-
-```bash
-node translator.js locale/de/messages.po de
-```
 
 ![Screen-Recording-2025-09-29-at-14 07 27](https://github.com/user-attachments/assets/0a03aecb-505f-4d26-9d58-6cba3ec72693)
 
