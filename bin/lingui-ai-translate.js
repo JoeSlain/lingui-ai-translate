@@ -52,6 +52,15 @@ function formatProgressText({ filePath, processed, total }) {
 	return `${rel} – ${processed}/${total}`;
 }
 
+let activeSpinner = null;
+
+function stopSpinnerOnError() {
+	if (!activeSpinner) return;
+	activeSpinner.stop();
+	activeSpinner.clear();
+	activeSpinner = null;
+}
+
 const PROVIDER_API_KEYS = {
 	openai: "OPENAI_API_KEY",
 	anthropic: "ANTHROPIC_API_KEY",
@@ -80,62 +89,79 @@ async function run() {
 			console.error("When using --file, --language is required (e.g., -l fr).");
 			process.exit(1);
 		}
-		const spinner = ora(`Translating ${opts.file}`).start();
-		await translatePoFile({
-			filePath: opts.file,
-			language: opts.language,
-			provider: opts.provider,
-			model: opts.model,
-			dryRun: opts.dryRun,
-			rules: opts.rules,
-			onProgress: (ev) => {
-				if (ev.type === "start")
-					spinner.text = formatProgressText({
-						filePath: ev.filePath,
-						processed: 0,
-						total: ev.total,
-					});
-				if (ev.type === "progress") spinner.text = formatProgressText(ev);
-				if (ev.type === "done")
-					ev.dryRun
-						? spinner.info(formatProgressText(ev))
-						: spinner.succeed(formatProgressText(ev));
-			},
-		});
+		activeSpinner = ora(`Translating ${opts.file}`).start();
+		try {
+			await translatePoFile({
+				filePath: opts.file,
+				language: opts.language,
+				provider: opts.provider,
+				model: opts.model,
+				dryRun: opts.dryRun,
+				rules: opts.rules,
+				onProgress: (ev) => {
+					if (ev.type === "start")
+						activeSpinner.text = formatProgressText({
+							filePath: ev.filePath,
+							processed: 0,
+							total: ev.total,
+						});
+					if (ev.type === "progress")
+						activeSpinner.text = formatProgressText(ev);
+					if (ev.type === "done")
+						ev.dryRun
+							? activeSpinner.info(formatProgressText(ev))
+							: activeSpinner.succeed(formatProgressText(ev));
+				},
+			});
+		} catch (err) {
+			activeSpinner.fail("Translation failed");
+			throw err;
+		} finally {
+			activeSpinner = null;
+		}
 		return;
 	}
 
 	if (opts.directory) {
-		const spinner = ora(`Scanning ${opts.directory}`).start();
-		await translatePoDirectory({
-			directoryPath: opts.directory,
-			include: opts.include,
-			defaultProvider: opts.provider,
-			defaultModel: opts.model,
-			dryRun: opts.dryRun,
-			concurrency: opts.concurrency,
-			defaultLanguage: opts.language,
-			rules: opts.rules,
-			onProgress: (ev) => {
-				if (ev.type === "start")
-					spinner.text = formatProgressText({
-						filePath: ev.filePath,
-						processed: 0,
-						total: ev.total,
-					});
-				if (ev.type === "progress") spinner.text = formatProgressText(ev);
-				if (ev.type === "done")
-					ev.dryRun
-						? spinner.info(formatProgressText(ev))
-						: spinner.succeed(formatProgressText(ev));
-			},
-		});
-		spinner.stop();
+		activeSpinner = ora(`Scanning ${opts.directory}`).start();
+		try {
+			await translatePoDirectory({
+				directoryPath: opts.directory,
+				include: opts.include,
+				defaultProvider: opts.provider,
+				defaultModel: opts.model,
+				dryRun: opts.dryRun,
+				concurrency: opts.concurrency,
+				defaultLanguage: opts.language,
+				rules: opts.rules,
+				onProgress: (ev) => {
+					if (ev.type === "start")
+						activeSpinner.text = formatProgressText({
+							filePath: ev.filePath,
+							processed: 0,
+							total: ev.total,
+						});
+					if (ev.type === "progress")
+						activeSpinner.text = formatProgressText(ev);
+					if (ev.type === "done")
+						ev.dryRun
+							? activeSpinner.info(formatProgressText(ev))
+							: activeSpinner.succeed(formatProgressText(ev));
+				},
+			});
+		} catch (err) {
+			activeSpinner.fail("Translation failed");
+			throw err;
+		} finally {
+			activeSpinner.stop();
+			activeSpinner = null;
+		}
 		return;
 	}
 }
 
 run().catch((err) => {
+	stopSpinnerOnError();
 	console.error(err?.message || err);
 	process.exit(1);
 });

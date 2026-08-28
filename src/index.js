@@ -9,6 +9,51 @@ import { GoogleGenAI } from "@google/genai";
 const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
 const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-haiku-20241022";
 const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
+const DEFAULT_MAX_RETRIES = 5;
+const DEFAULT_RETRY_BASE_DELAY_MS = 2000;
+const DEFAULT_BATCH_SIZE = 50;
+const DEFAULT_BATCH_MAX_TOKENS = 8192;
+const DEFAULT_BATCH_JSON_RETRIES = 2;
+
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getHttpStatus(err) {
+	if (typeof err?.status === "number") return err.status;
+	if (typeof err?.response?.status === "number") return err.response.status;
+	const match = String(err?.message ?? "").match(/\b(429|500|502|503|504)\b/);
+	return match ? Number(match[1]) : null;
+}
+
+function isRetryableError(err) {
+	const status = getHttpStatus(err);
+	return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function getRetryAfterMs(err) {
+	const retryAfter =
+		err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"];
+	if (retryAfter == null) return null;
+	const seconds = Number.parseInt(String(retryAfter), 10);
+	return Number.isFinite(seconds) ? seconds * 1000 : null;
+}
+
+async function withRetry(fn, { maxRetries = DEFAULT_MAX_RETRIES, baseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS } = {}) {
+	let lastError;
+	for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+		try {
+			return await fn();
+		} catch (err) {
+			lastError = err;
+			if (!isRetryableError(err) || attempt === maxRetries) throw err;
+			const retryAfterMs = getRetryAfterMs(err);
+			const delayMs = retryAfterMs ?? baseDelayMs * 2 ** attempt;
+			await sleep(delayMs);
+		}
+	}
+	throw lastError;
+}
 
 function getOpenAIClient() {
 	return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -42,8 +87,12 @@ function extractLanguageFromHeaders(headers) {
 	return null;
 }
 
-function createTranslatePrompt(targetLang, rules) {
-	let prompt = `Translate into ${targetLang}. Only output the translation text. Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" should keep {name} unchanged. Maintain surrounding punctuation. Make short an concise translation while preserving the full meaning of the sentence.`;
+function createBatchTranslatePrompt(targetLang, rules) {
+	let prompt = `Translate into ${targetLang}. You will receive a JSON object where each key is an id and each value is a source string to translate.
+Return ONLY a valid JSON object with the exact same keys and translated string values.
+Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" must keep {name} unchanged.
+Maintain surrounding punctuation. Keep translations short and concise while preserving the full meaning.
+Do not wrap the JSON in markdown code fences.`;
 
 	if (rules && rules.trim()) {
 		prompt += `\n\nAdditional translation rules:\n${rules.trim()}`;
@@ -52,47 +101,141 @@ function createTranslatePrompt(targetLang, rules) {
 	return prompt;
 }
 
-async function translateText({
-	client,
-	text,
-	language,
-	model,
-	rules,
-	provider = "openai",
-}) {
-	const systemPrompt = createTranslatePrompt(language, rules);
+function chunkArray(items, size) {
+	const chunks = [];
+	for (let i = 0; i < items.length; i += size) {
+		chunks.push(items.slice(i, i + size));
+	}
+	return chunks;
+}
 
+export function buildBatchInput(items) {
+	const input = {};
+	for (let i = 0; i < items.length; i += 1) {
+		input[String(i)] = items[i].msgid;
+	}
+	return input;
+}
+
+export function parseBatchTranslationResponse(raw, expectedKeys) {
+	let text = String(raw ?? "").trim();
+	const fenceMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+	if (fenceMatch) text = fenceMatch[1].trim();
+
+	let parsed;
+	try {
+		parsed = JSON.parse(text);
+	} catch (err) {
+		const baseMsg = err?.message || String(err);
+		throw new Error(`Invalid JSON in batch translation response: ${baseMsg}`);
+	}
+
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Batch translation response must be a JSON object");
+	}
+
+	const result = {};
+	for (const key of expectedKeys) {
+		if (!(key in parsed)) {
+			throw new Error(`Missing translation for key "${key}" in batch response`);
+		}
+		const value = parsed[key];
+		if (typeof value !== "string") {
+			throw new Error(`Translation for key "${key}" must be a string`);
+		}
+		result[key] = value;
+	}
+	return result;
+}
+
+async function callModel({
+	client,
+	systemPrompt,
+	userContent,
+	model,
+	provider = "openai",
+	maxTokens = DEFAULT_BATCH_MAX_TOKENS,
+}) {
 	if (provider === "anthropic") {
-		const res = await client.messages.create({
-			model: model || DEFAULT_ANTHROPIC_MODEL,
-			max_tokens: 1024,
-			system: systemPrompt,
-			messages: [{ role: "user", content: text }],
-		});
+		const res = await withRetry(() =>
+			client.messages.create({
+				model: model || DEFAULT_ANTHROPIC_MODEL,
+				max_tokens: maxTokens,
+				system: systemPrompt,
+				messages: [{ role: "user", content: userContent }],
+			}),
+		);
 		const block = res.content?.find((b) => b.type === "text");
-		const out = block?.text ?? "";
-		return out.trim();
+		return (block?.text ?? "").trim();
 	}
 
 	if (provider === "gemini") {
-		const res = await client.models.generateContent({
-			model: model || DEFAULT_GEMINI_MODEL,
-			contents: text,
-			config: { systemInstruction: systemPrompt },
-		});
-		const out = res.text ?? "";
-		return out.trim();
+		const res = await withRetry(() =>
+			client.models.generateContent({
+				model: model || DEFAULT_GEMINI_MODEL,
+				contents: userContent,
+				config: { systemInstruction: systemPrompt },
+			}),
+		);
+		return (res.text ?? "").trim();
 	}
 
-	const res = await client.chat.completions.create({
-		model: model || DEFAULT_OPENAI_MODEL,
-		messages: [
-			{ role: "system", content: systemPrompt },
-			{ role: "user", content: text },
-		],
-	});
-	const out = res.choices?.[0]?.message?.content ?? "";
-	return out.trim();
+	const res = await withRetry(() =>
+		client.chat.completions.create({
+			model: model || DEFAULT_OPENAI_MODEL,
+			max_tokens: maxTokens,
+			messages: [
+				{ role: "system", content: systemPrompt },
+				{ role: "user", content: userContent },
+			],
+		}),
+	);
+	return (res.choices?.[0]?.message?.content ?? "").trim();
+}
+
+async function translateBatchChunk({
+	client,
+	items,
+	language,
+	model,
+	rules,
+	provider,
+}) {
+	const input = buildBatchInput(items);
+	const expectedKeys = Object.keys(input);
+	const systemPrompt = createBatchTranslatePrompt(language, rules);
+	const userContent = JSON.stringify(input);
+	let lastError;
+
+	for (let attempt = 0; attempt <= DEFAULT_BATCH_JSON_RETRIES; attempt += 1) {
+		try {
+			const raw = await callModel({
+				client,
+				systemPrompt,
+				userContent,
+				model,
+				provider,
+			});
+			return parseBatchTranslationResponse(raw, expectedKeys);
+		} catch (err) {
+			lastError = err;
+			if (attempt === DEFAULT_BATCH_JSON_RETRIES || !isBatchParseError(err)) {
+				throw err;
+			}
+		}
+	}
+
+	throw lastError;
+}
+
+function isBatchParseError(err) {
+	const msg = String(err?.message ?? "");
+	return (
+		msg.includes("Invalid JSON in batch translation response") ||
+		msg.includes("Batch translation response must be a JSON object") ||
+		msg.includes('Missing translation for key "') ||
+		msg.includes('Translation for key "')
+	);
 }
 
 function listUntranslatedEntries(poJson) {
@@ -127,6 +270,7 @@ export async function translatePoFile({
 	onProgress,
 	rules,
 	provider = "openai",
+	batchSize = DEFAULT_BATCH_SIZE,
 }) {
 	const abs = path.resolve(filePath);
 	const raw = fs.readFileSync(abs);
@@ -156,19 +300,23 @@ export async function translatePoFile({
 	const apiClient = client || getClient(provider);
 
 	let processed = 0;
-	for (const { entry, msgid } of items) {
-		const translated = await translateText({
+	const chunks = chunkArray(items, batchSize);
+	for (const chunk of chunks) {
+		const translations = await translateBatchChunk({
 			client: apiClient,
-			text: msgid,
+			items: chunk,
 			language: targetLang,
 			model,
 			rules,
 			provider,
 		});
-		setTranslation(entry, translated);
-		processed += 1;
-		if (onProgress)
-			onProgress({ type: "progress", filePath: abs, processed, total });
+
+		for (let i = 0; i < chunk.length; i += 1) {
+			setTranslation(chunk[i].entry, translations[String(i)]);
+			processed += 1;
+			if (onProgress)
+				onProgress({ type: "progress", filePath: abs, processed, total });
+		}
 	}
 
 	if (dryRun) {
@@ -290,4 +438,6 @@ export async function translatePoDirectory({
 export default {
 	translatePoFile,
 	translatePoDirectory,
+	buildBatchInput,
+	parseBatchTranslationResponse,
 };
