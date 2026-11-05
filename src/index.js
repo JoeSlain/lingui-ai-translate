@@ -1,4 +1,5 @@
 import fs from "fs";
+import { createTranslationSession } from "./runtime.js";
 import path from "path";
 import fg from "fast-glob";
 import gettextParser from "gettext-parser";
@@ -6,14 +7,14 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
 
-const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+export const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
 const DEFAULT_ANTHROPIC_MODEL = "claude-3-5-haiku-20241022";
 const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
 const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_RETRY_BASE_DELAY_MS = 2000;
 const DEFAULT_BATCH_SIZE = 50;
 const DEFAULT_BATCH_MAX_TOKENS = 8192;
-const DEFAULT_BATCH_JSON_RETRIES = 2;
+const DEFAULT_BATCH_JSON_RETRIES = 1;
 
 function sleep(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,19 +28,26 @@ function getHttpStatus(err) {
 }
 
 function isRetryableError(err) {
+	if (
+		err?.code === "insufficient_quota" ||
+		/no credits|quota|billing|credit balance/i.test(String(err?.message ?? ""))
+	)
+		return false;
 	const status = getHttpStatus(err);
 	return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
 }
 
 function getRetryAfterMs(err) {
-	const retryAfter =
-		err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"];
+	const retryAfter = err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"];
 	if (retryAfter == null) return null;
 	const seconds = Number.parseInt(String(retryAfter), 10);
 	return Number.isFinite(seconds) ? seconds * 1000 : null;
 }
 
-async function withRetry(fn, { maxRetries = DEFAULT_MAX_RETRIES, baseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS } = {}) {
+async function withRetry(
+	fn,
+	{ maxRetries = DEFAULT_MAX_RETRIES, baseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS } = {},
+) {
 	let lastError;
 	for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
 		try {
@@ -55,8 +63,45 @@ async function withRetry(fn, { maxRetries = DEFAULT_MAX_RETRIES, baseDelayMs = D
 	throw lastError;
 }
 
+function providerModel(provider, model) {
+	return (
+		model ||
+		({
+			openai: DEFAULT_OPENAI_MODEL,
+			anthropic: DEFAULT_ANTHROPIC_MODEL,
+			gemini: DEFAULT_GEMINI_MODEL,
+		}[provider] ??
+			DEFAULT_OPENAI_MODEL)
+	);
+}
+function checkpointCatalog(file, po) {
+	const checkpoint = `${file}.${process.pid}.tmp`;
+	try {
+		fs.writeFileSync(checkpoint, gettextParser.po.compile(po));
+		fs.renameSync(checkpoint, file);
+	} finally {
+		if (fs.existsSync(checkpoint)) fs.unlinkSync(checkpoint);
+	}
+}
+
+export function openAIRequestOptions(
+	model = DEFAULT_OPENAI_MODEL,
+	maxTokens = DEFAULT_BATCH_MAX_TOKENS,
+) {
+	return {
+		model,
+		...(/^(gpt-([5-9]|\d{2,})|o[0-9])/i.test(model)
+			? { max_completion_tokens: maxTokens, reasoning_effort: "none" }
+			: { max_tokens: maxTokens }),
+		response_format: { type: "json_object" },
+	};
+}
+
 function getOpenAIClient() {
-	return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+	return new OpenAI({
+		apiKey: process.env.LINGUI_OPENAI_API_KEY || process.env.OPENAI_API_KEY,
+		maxRetries: 0,
+	});
 }
 
 function getAnthropicClient() {
@@ -87,7 +132,7 @@ function extractLanguageFromHeaders(headers) {
 	return null;
 }
 
-function createBatchTranslatePrompt(targetLang, rules) {
+export function createBatchTranslatePrompt(targetLang, rules) {
 	let prompt = `Translate into ${targetLang}. You will receive a JSON object where each key is an id and each value is a source string to translate.
 Return ONLY a valid JSON object with the exact same keys and translated string values.
 Do not translate text inside curly braces or ICU placeholders. Example: "Hello {name}" must keep {name} unchanged.
@@ -140,7 +185,7 @@ export function parseBatchTranslationResponse(raw, expectedKeys) {
 			throw new Error(`Missing translation for key "${key}" in batch response`);
 		}
 		const value = parsed[key];
-		if (typeof value !== "string") {
+		if (typeof value !== "string" || !value.trim()) {
 			throw new Error(`Translation for key "${key}" must be a string`);
 		}
 		result[key] = value;
@@ -155,15 +200,25 @@ async function callModel({
 	model,
 	provider = "openai",
 	maxTokens = DEFAULT_BATCH_MAX_TOKENS,
+	session,
 }) {
 	if (provider === "anthropic") {
 		const res = await withRetry(() =>
-			client.messages.create({
-				model: model || DEFAULT_ANTHROPIC_MODEL,
-				max_tokens: maxTokens,
-				system: systemPrompt,
-				messages: [{ role: "user", content: userContent }],
-			}),
+			session.request(
+				{
+					provider,
+					model: model || DEFAULT_ANTHROPIC_MODEL,
+					max_tokens: maxTokens,
+					messages: [{ content: systemPrompt }, { content: userContent }],
+				},
+				() =>
+					client.messages.create({
+						model: model || DEFAULT_ANTHROPIC_MODEL,
+						max_tokens: maxTokens,
+						system: systemPrompt,
+						messages: [{ role: "user", content: userContent }],
+					}),
+			),
 		);
 		const block = res.content?.find((b) => b.type === "text");
 		return (block?.text ?? "").trim();
@@ -171,36 +226,39 @@ async function callModel({
 
 	if (provider === "gemini") {
 		const res = await withRetry(() =>
-			client.models.generateContent({
-				model: model || DEFAULT_GEMINI_MODEL,
-				contents: userContent,
-				config: { systemInstruction: systemPrompt },
-			}),
+			session.request(
+				{
+					provider,
+					model: model || DEFAULT_GEMINI_MODEL,
+					max_tokens: maxTokens,
+					messages: [{ content: systemPrompt }, { content: userContent }],
+				},
+				() =>
+					client.models.generateContent({
+						model: model || DEFAULT_GEMINI_MODEL,
+						contents: userContent,
+						config: { systemInstruction: systemPrompt },
+					}),
+			),
 		);
 		return (res.text ?? "").trim();
 	}
 
+	const body = {
+		...openAIRequestOptions(model || DEFAULT_OPENAI_MODEL, maxTokens),
+		messages: [
+			{ role: "system", content: systemPrompt },
+			{ role: "user", content: userContent },
+		],
+	};
 	const res = await withRetry(() =>
-		client.chat.completions.create({
-			model: model || DEFAULT_OPENAI_MODEL,
-			max_tokens: maxTokens,
-			messages: [
-				{ role: "system", content: systemPrompt },
-				{ role: "user", content: userContent },
-			],
-		}),
+		session.request(body, () => client.chat.completions.create(body)),
 	);
+
 	return (res.choices?.[0]?.message?.content ?? "").trim();
 }
 
-async function translateBatchChunk({
-	client,
-	items,
-	language,
-	model,
-	rules,
-	provider,
-}) {
+async function translateBatchChunk({ client, items, language, model, rules, provider, session }) {
 	const input = buildBatchInput(items);
 	const expectedKeys = Object.keys(input);
 	const systemPrompt = createBatchTranslatePrompt(language, rules);
@@ -215,6 +273,7 @@ async function translateBatchChunk({
 				userContent,
 				model,
 				provider,
+				session,
 			});
 			return parseBatchTranslationResponse(raw, expectedKeys);
 		} catch (err) {
@@ -238,7 +297,7 @@ function isBatchParseError(err) {
 	);
 }
 
-function listUntranslatedEntries(poJson) {
+export function listUntranslatedEntries(poJson) {
 	const items = [];
 	const translations = poJson.translations || {};
 	for (const ctx of Object.keys(translations)) {
@@ -258,7 +317,7 @@ function listUntranslatedEntries(poJson) {
 
 function setTranslation(entry, text) {
 	if (!Array.isArray(entry.msgstr)) entry.msgstr = [""];
-	entry.msgstr[0] = text.replace(/"/g, '\\"');
+	entry.msgstr[0] = text;
 }
 
 export async function translatePoFile({
@@ -271,6 +330,12 @@ export async function translatePoFile({
 	rules,
 	provider = "openai",
 	batchSize = DEFAULT_BATCH_SIZE,
+	cachePath,
+	usageLog,
+	onUsage,
+	maxRequests,
+	maxCostUsd,
+	session = createTranslationSession({ cachePath, usageLog, onUsage, maxRequests, maxCostUsd }),
 }) {
 	const abs = path.resolve(filePath);
 	const raw = fs.readFileSync(abs);
@@ -297,10 +362,34 @@ export async function translatePoFile({
 
 	if (onProgress) onProgress({ type: "start", filePath: abs, total });
 
-	const apiClient = client || getClient(provider);
-
+	if (!Number.isSafeInteger(batchSize) || batchSize < 1)
+		throw new Error("batchSize must be a positive integer");
+	if (dryRun || total === 0) {
+		if (onProgress) onProgress({ type: "done", filePath: abs, processed: 0, total, dryRun });
+		return { filePath: abs, processed: 0, total, dryRun };
+	}
+	const context = {
+		provider,
+		model:
+			model ||
+			(provider === "anthropic"
+				? DEFAULT_ANTHROPIC_MODEL
+				: provider === "gemini"
+					? DEFAULT_GEMINI_MODEL
+					: DEFAULT_OPENAI_MODEL),
+		language: targetLang,
+		rules,
+	};
 	let processed = 0;
-	const chunks = chunkArray(items, batchSize);
+	const pending = items.filter((item) => {
+		const cached = session.get(context, item.msgid, item.ctx);
+		if (cached === undefined) return true;
+		setTranslation(item.entry, cached);
+		processed++;
+		return false;
+	});
+	const apiClient = pending.length ? client || getClient(provider) : null;
+	const chunks = chunkArray(pending, batchSize);
 	for (const chunk of chunks) {
 		const translations = await translateBatchChunk({
 			client: apiClient,
@@ -309,31 +398,28 @@ export async function translatePoFile({
 			model,
 			rules,
 			provider,
+			session,
 		});
 
+		const processedBeforeChunk = processed;
 		for (let i = 0; i < chunk.length; i += 1) {
 			setTranslation(chunk[i].entry, translations[String(i)]);
+			session.put(context, chunk[i].msgid, translations[String(i)], chunk[i].ctx);
 			processed += 1;
+		}
+		checkpointCatalog(abs, po);
+		for (let i = 0; i < chunk.length; i += 1) {
 			if (onProgress)
-				onProgress({ type: "progress", filePath: abs, processed, total });
+				onProgress({
+					type: "progress",
+					filePath: abs,
+					processed: processedBeforeChunk + i + 1,
+					total,
+				});
 		}
 	}
+	if (chunks.length === 0 && processed > 0) checkpointCatalog(abs, po);
 
-	if (dryRun) {
-		if (onProgress)
-			onProgress({
-				type: "done",
-				filePath: abs,
-				processed,
-				total,
-				dryRun: true,
-			});
-		console.log(`[dry-run] ${filePath}: would write ${processed} translations`);
-		return { filePath: abs, processed, dryRun: true };
-	}
-
-	const out = gettextParser.po.compile(po);
-	fs.writeFileSync(abs, out);
 	if (onProgress)
 		onProgress({
 			type: "done",
@@ -342,39 +428,27 @@ export async function translatePoFile({
 			total,
 			dryRun: false,
 		});
-	return { filePath: abs, processed, dryRun: false };
+	return { filePath: abs, processed, dryRun: false, usage: session.summary() };
 }
 
 async function withConcurrency(limit, items, worker) {
-	const queue = [...items];
-	let active = 0;
-	let index = 0;
-	const results = [];
-	return await new Promise((resolve, reject) => {
-		const next = () => {
-			if (queue.length === 0 && active === 0) {
-				resolve(Promise.all(results));
-				return;
+	const results = Array.from({ length: items.length });
+	let next = 0,
+		firstError;
+	await Promise.all(
+		Array.from({ length: Math.min(limit, items.length) }, async () => {
+			while (!firstError && next < items.length) {
+				const index = next++;
+				try {
+					results[index] = await worker(items[index], index);
+				} catch (error) {
+					firstError ??= error;
+				}
 			}
-			while (active < limit && queue.length > 0) {
-				const i = index++;
-				const item = queue.shift();
-				active += 1;
-				Promise.resolve()
-					.then(() => worker(item, i))
-					.then((r) => {
-						active -= 1;
-						results.push(r);
-						next();
-					})
-					.catch((err) => {
-						active -= 1;
-						reject(err);
-					});
-			}
-		};
-		next();
-	});
+		}),
+	);
+	if (firstError) throw firstError;
+	return results;
 }
 
 export async function translatePoDirectory({
@@ -385,10 +459,19 @@ export async function translatePoDirectory({
 	defaultProvider = "openai",
 	dryRun = false,
 	concurrency = 2,
+	batchSize = DEFAULT_BATCH_SIZE,
+	cachePath,
+	usageLog,
+	onUsage,
+	maxRequests,
+	maxCostUsd,
+	session = createTranslationSession({ cachePath, usageLog, onUsage, maxRequests, maxCostUsd }),
 	client,
 	onProgress,
 	rules,
 }) {
+	if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+		throw new Error("concurrency must be a positive integer");
 	const absDir = path.resolve(directoryPath);
 	const files = await fg(include, { cwd: absDir, absolute: true });
 
@@ -397,40 +480,38 @@ export async function translatePoDirectory({
 		return [];
 	}
 
-	const results = await withConcurrency(
-		concurrency,
-		files,
-		async (filePath) => {
-			const raw = fs.readFileSync(filePath);
-			let po;
-			try {
-				po = gettextParser.po.parse(raw);
-			} catch (err) {
-				const baseMsg = err?.message || String(err);
-				throw new Error(
-					`Error parsing PO data in ${filePath}: ${baseMsg}. This can be caused by an unescaped quote character in a msgid or msgstr value.`,
-				);
-			}
-			const headerLang = extractLanguageFromHeaders(po.headers);
-			const language = headerLang || defaultLanguage;
-			if (!language) {
-				console.warn(
-					`Skipping ${filePath}: could not determine language (no header and no --language)`,
-				);
-				return { filePath, processed: 0, skipped: true };
-			}
-			return await translatePoFile({
-				filePath,
-				language,
-				model: defaultModel,
-				dryRun,
-				client,
-				onProgress,
-				rules,
-				provider: defaultProvider,
-			});
-		},
-	);
+	const results = await withConcurrency(concurrency, files, async (filePath) => {
+		const raw = fs.readFileSync(filePath);
+		let po;
+		try {
+			po = gettextParser.po.parse(raw);
+		} catch (err) {
+			const baseMsg = err?.message || String(err);
+			throw new Error(
+				`Error parsing PO data in ${filePath}: ${baseMsg}. This can be caused by an unescaped quote character in a msgid or msgstr value.`,
+			);
+		}
+		const headerLang = extractLanguageFromHeaders(po.headers);
+		const language = headerLang || defaultLanguage;
+		if (!language) {
+			console.warn(
+				`Skipping ${filePath}: could not determine language (no header and no --language)`,
+			);
+			return { filePath, processed: 0, skipped: true };
+		}
+		return await translatePoFile({
+			filePath,
+			language,
+			batchSize,
+			session,
+			model: defaultModel,
+			dryRun,
+			client,
+			onProgress,
+			rules,
+			provider: defaultProvider,
+		});
+	});
 
 	return results;
 }
@@ -441,3 +522,62 @@ export default {
 	buildBatchInput,
 	parseBatchTranslationResponse,
 };
+
+export { submitTranslationBatch, resumeTranslationBatch } from "./batch.js";
+
+/** Translate JSON/localization strings with the same batching, cache and accounting as PO files. */
+export async function translateStrings({
+	strings,
+	language,
+	model,
+	provider = "openai",
+	rules,
+	batchSize = DEFAULT_BATCH_SIZE,
+	dryRun = false,
+	client,
+	cachePath,
+	usageLog,
+	onUsage,
+	maxRequests,
+	maxCostUsd,
+	session = createTranslationSession({ cachePath, usageLog, onUsage, maxRequests, maxCostUsd }),
+}) {
+	if (!Array.isArray(strings) || strings.some((s) => typeof s !== "string" || !s.trim()))
+		throw new Error("strings must contain non-empty strings");
+	if (!language) throw new Error("language is required");
+	if (!Number.isSafeInteger(batchSize) || batchSize < 1)
+		throw new Error("batchSize must be a positive integer");
+	model = providerModel(provider, model);
+	const context = { provider, model, language, rules };
+	const translations = strings.map((source) => session.get(context, source));
+	if (dryRun)
+		return {
+			translations,
+			planned: translations.filter((s) => s === undefined).length,
+			dryRun: true,
+			usage: session.summary(),
+		};
+	const missing = [...new Set(strings.filter((_, i) => translations[i] === undefined))];
+	const api = missing.length ? client || getClient(provider) : null;
+	const translated = new Map();
+	for (const chunk of chunkArray(missing, batchSize)) {
+		const values = await translateBatchChunk({
+			client: api,
+			items: chunk.map((msgid) => ({ msgid })),
+			language,
+			model,
+			rules,
+			provider,
+			session,
+		});
+		for (const [i, source] of chunk.entries()) {
+			translated.set(source, values[String(i)]);
+			session.put(context, source, values[String(i)]);
+		}
+	}
+	return {
+		translations: strings.map((source, i) => translations[i] ?? translated.get(source)),
+		usage: session.summary(),
+	};
+}
+export { createTranslationSession } from "./runtime.js";

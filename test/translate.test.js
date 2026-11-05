@@ -273,7 +273,7 @@ describe("providers", () => {
 		expect(mockClient.chat.completions.create).toHaveBeenCalledTimes(1);
 		expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
 			expect.objectContaining({
-				model: "gpt-4o-mini",
+				model: "gpt-6-luna",
 				messages: expect.arrayContaining([
 					expect.objectContaining({ role: "system" }),
 					expect.objectContaining({
