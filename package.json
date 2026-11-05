@@ -1,13 +1,19 @@
 {
 	"name": "lingui-ai-translate",
-	"version": "0.1.5",
+	"version": "0.2.0",
 	"description": "Translate Lingui .po files using OpenAI. CLI and library.",
-	"type": "module",
+	"keywords": [
+		".po",
+		"cli",
+		"gettext",
+		"lingui",
+		"openai",
+		"translate"
+	],
+	"license": "MIT",
+	"author": "Joe Slain",
 	"bin": {
 		"lingui-ai-translate": "bin/lingui-ai-translate.js"
-	},
-	"exports": {
-		".": "./src/index.js"
 	},
 	"files": [
 		"bin",
@@ -15,6 +21,10 @@
 		"README.md",
 		"examples"
 	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.js"
+	},
 	"scripts": {
 		"start": "node bin/lingui-ai-translate.js",
 		"example:fr": "node bin/lingui-ai-translate.js -f examples/fr/messages.po -l fr",
@@ -22,19 +32,6 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:integration": "vitest run --config vitest.integration.config.js"
-	},
-	"keywords": [
-		"lingui",
-		"gettext",
-		".po",
-		"translate",
-		"openai",
-		"cli"
-	],
-	"author": "Joe Slain",
-	"license": "MIT",
-	"engines": {
-		"node": ">=18"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "^0.72.1",
@@ -47,5 +44,8 @@
 	},
 	"devDependencies": {
 		"vitest": "^2.1.2"
+	},
+	"engines": {
+		"node": ">=18"
 	}
 }
